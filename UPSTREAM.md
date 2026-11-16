@@ -1,6 +1,6 @@
-# 上游合并策略（LiteLLM / Higress）
+# 上游合并策略（LiteLLM / Higress / new-api）
 
-目标：把学习型路由能力合并进两个上游项目。分两步走——**先独立仓库跑通 + 开 issue 对齐维护者预期，再提 PR**。直接冷提 PR 大概率被搁置。
+目标：把学习型路由能力合并进三个上游项目。分两步走——**先独立仓库跑通 + 开 issue 对齐维护者预期，再提 PR**。直接冷提 PR 大概率被搁置。
 
 ## 通用原则
 
@@ -37,6 +37,16 @@
   - 与现有 `ai-proxy` modelMapping、`model-router` 插件的职责边界（我们做档位学习决策，它们做转发执行）
   - shared data 跨 worker 状态共享是否可接受，或是否要求接 Redis
   - 是否要求把飞轮状态外置（wasm 沙箱无本地磁盘）
+
+## new-api（QuantumNous）
+
+- 仓库：https://github.com/QuantumNous/new-api（Go + Gin，AGPLv3，one-api 增强 fork）
+- **前置网关已可用**（`gateway/`，零改动对接）——先跑 shadow 攒数据
+- 合并目标位置：`controller/relay` 的渠道分发环节（解析 `model` 后、选渠道前调用 `Decide()` 改写；relay 结束处结算）
+- **信号优势是三个宿主里最厚的**：new-api 自己就采集渠道重试次数、预扣费/流式结算的真实 quota（可直接换算 costYuan）、耗时、错误状态——`rewardOf` 的罚分项几乎全部可精确喂入
+- 技术可行性：new-api 是 Go 项目，`go/core`（纯标准库）可直接复用，移植成本三个宿主里最低
+- 协议：AGPLv3 与 MIT 核心兼容（MIT 可并入 AGPL 项目）
+- issue 要点：现有渠道优先级/权重是静态配置，无学习闭环；学习型选模 + 质量奖励飞轮 + shadow 灰度，附本仓库 golden 测试与前置网关运行数据
 
 ## 建议的 issue 措辞要点
 

@@ -20,7 +20,8 @@
 ├── spec/ROUTING_SPEC.md   # 跨语言行为规范（移植对照的唯一事实源）
 ├── js/                    # 参考实现（Node ESM，零依赖）+ golden 测试
 ├── python/                # LiteLLM 适配（agentic_router 包 + CustomLogger hook）
-└── go/                    # Higress 适配（Wasm 插件，TinyGo 构建）
+├── go/                    # Higress 适配（Wasm 插件，TinyGo 构建）
+└── gateway/               # new-api 前置网关（零依赖 Node，OpenAI 兼容反代）
 ```
 
 三个实现通过 **golden 数值对拍**锁定行为一致性：`js/test/core.test.js`、`python/tests/test_core.py`、`go/core/core_test.go` 中的数值用例一一同源，改公式必须三处同步。
@@ -68,10 +69,24 @@ tierModels:
 
 构建与安装（TinyGo → plugin.wasm → Higress 插件市场/独立路由）见 [go/README.md](go/README.md)。
 
+### new-api（Node 前置网关）
+
+new-api **零改动**：网关插在客户端与 new-api 之间，自动发现模型清单归三档，active 模式改写 `model` 字段，流式透传 + usage 成本结算。
+
+```bash
+NEWAPI_BASE_URL=http://127.0.0.1:3000 \
+NEWAPI_API_KEY=sk-xxx \
+MODE=shadow \
+node gateway/server.mjs          # 客户端 base_url 改指 http://127.0.0.1:8787
+```
+
+环境变量、launchd 自启、信号边界说明见 [gateway/README.md](gateway/README.md)。
+
 ### 本地开发
 
 ```bash
 cd js && npm test                      # node --test
+cd gateway && npm test                 # e2e（mock new-api）
 cd python && python3 -m unittest discover -s tests
 cd go && go test ./core/...            # 需要本机 Go 工具链
 ```
@@ -106,6 +121,7 @@ reward = 1 − 工具失败罚(0.2/次, 上限0.6) − 重试罚(0.2/次, 上限
 - [x] 三语言核心 + golden 对拍
 - [x] LiteLLM CustomLogger 集成（pre_call 改写模型 / post_call 奖励）
 - [x] Higress Wasm 插件（body 模型改写 + 响应结算）
+- [x] new-api 前置网关（模型目录自动发现 + 流式透传 + usage 结算）
 - [ ] LiteLLM `CustomRoutingStrategyBase` deployment 级选择（实验）
 - [ ] Higress Redis 持久化
 - [ ] 上游合并（[UPSTREAM.md](UPSTREAM.md)）

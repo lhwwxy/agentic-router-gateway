@@ -1,0 +1,22 @@
+{
+  "name": "agentic-router-gateway",
+  "version": "0.1.0",
+  "description": "Zero-dependency OpenAI-compatible front gateway for new-api with the learning agentic router (rule + UCB + LinUCB + k-NN under EXP3, quality-reward flywheel)",
+  "type": "module",
+  "license": "MIT",
+  "author": "lhl",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "new-api",
+    "one-api",
+    "agentic-router",
+    "model-routing",
+    "llm-gateway"
+  ]
+}
