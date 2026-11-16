@@ -1,0 +1,21 @@
+# Node
+node_modules/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Go / Wasm
+*.wasm
+go/vendor/
+
+# 状态与测试产物
+.agentic-router/
+*.tmp
+.DS_Store

@@ -1,0 +1,33 @@
+{
+  "name": "@agentic-router/core",
+  "version": "0.1.0",
+  "description": "Agentic Router learning core (framework-free): rule + UCB + LinUCB + k-NN experts under an EXP3 meta-selector, with a durable quality-reward flywheel. Reference implementation for the Python (LiteLLM) and Go (Higress) ports.",
+  "type": "module",
+  "license": "MIT",
+  "author": "lhl",
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "agentic-router",
+    "model-routing",
+    "bandit",
+    "exp3",
+    "linucb",
+    "flywheel",
+    "litellm",
+    "higress"
+  ]
+}

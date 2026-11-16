@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-router"
+version = "0.1.0"
+description = "Learning agentic router: rule + UCB + LinUCB + k-NN experts under an EXP3 meta-selector with a quality-reward flywheel. Includes a LiteLLM gateway hook."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "lhl" }]
+requires-python = ">=3.9"
+keywords = ["llm", "routing", "bandit", "exp3", "litellm", "gateway"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+litellm = ["litellm"]
+dev = ["litellm", "pytest"]
+
+[tool.setuptools.packages.find]
+include = ["agentic_router*"]
