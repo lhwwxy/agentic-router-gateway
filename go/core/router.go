@@ -8,13 +8,17 @@ import (
 
 var defaultRNG = func() float64 { return rand.Float64() }
 
+func randInt(n int) int { return rand.Intn(n) }
+
 // 编排层：决策 → 结算（对应 js/src/router.js）。decisions 由本结构持有，
 // 专家状态 State 可整体序列化后经宿主（Wasm shared data / Redis）持久化。
 
 const (
-	LinGraduation = 50  // LinUCB 毕业样本线
-	KnnGraduation = 30  // k-NN 毕业经验线
+	LinGraduation = 50   // LinUCB 毕业样本线
+	KnnGraduation = 30   // k-NN 毕业经验线
 	DecisionWindow = 200
+	// ExplorationEps 是档位级 ε 探索率（0 关闭）
+	ExplorationEps = 0.08
 )
 
 // Decision 一条路由决策。
@@ -72,6 +76,8 @@ type Router struct {
 	State         *State
 	ModelTiers    ModelTiers
 	CrossProvider bool
+	// Exploration 是档位级 ε 探索率（0 关闭，默认 ExplorationEps）
+	Exploration   float64
 	rng           func() float64
 	decisions     decisionRing
 }
@@ -84,7 +90,8 @@ func NewRouter(state *State, mt ModelTiers, crossProvider bool, rng func() float
 	if rng == nil {
 		rng = defaultRNG
 	}
-	return &Router{State: state, ModelTiers: mt, CrossProvider: crossProvider, rng: rng}
+	return &Router{State: state, ModelTiers: mt, CrossProvider: crossProvider,
+		Exploration: ExplorationEps, rng: rng}
 }
 
 // Decide 输入本轮用户文本，返回路由决策（含目标模型）。
@@ -112,7 +119,19 @@ func (r *Router) Decide(text, provider string, availableTiers []string) *Decisio
 	if chosenRec.Tier == "" {
 		chosenRec = recs["rule"] // k-NN 冷启动回退规则表
 	}
-	resolved := ResolveTier(chosenRec.Tier, provider, r.ModelTiers, r.CrossProvider)
+	tier := chosenRec.Tier
+	explored := false
+	// 档位级 ε 探索（v0.2）：EXP3 按实现奖励评判专家，会惩罚付探索成本的 UCB；
+	// 贪婪专家主导后没人再探索非首选档，正确档位的数据永远采不到。
+	// 以 ε 概率随机路由一个可用档位，保证全臂数据持续流入（reward 记在 used 档）。
+	if r.Exploration > 0 && len(tiers) > 1 && r.rng() < r.Exploration {
+		tier = tiers[randInt(len(tiers))]
+		explored = true
+	}
+	resolved := ResolveTier(tier, provider, r.ModelTiers, r.CrossProvider)
+	if explored {
+		resolved.Note += " [explore]"
+	}
 
 	r.State.Seq++
 	d := &Decision{
@@ -120,7 +139,7 @@ func (r *Router) Decide(text, provider string, availableTiers []string) *Decisio
 		Type: cls.Type, Complexity: cls.Complexity, Len: len([]rune(text)),
 		Mode: r.State.Mode, Chosen: meta.Chosen,
 		PChosen: meta.Ps[meta.Chosen], Pool: meta.Pool,
-		Tier: chosenRec.Tier, Used: resolved.Used,
+		Tier: tier, Used: resolved.Used,
 		Provider: resolved.Provider, Model: resolved.Target,
 		Note: resolved.Note, Reason: chosenRec.Reason,
 	}

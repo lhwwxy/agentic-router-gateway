@@ -35,6 +35,7 @@ node gateway/server.mjs
 | `NEWAPI_API_KEY` | — | 目录探测用；客户端不带令牌时的兜底令牌 |
 | `MODE` | `shadow` | `active` 后真实改写模型 |
 | `PORT` / `HOST` | `8787` / `127.0.0.1` | 监听 |
+| `EXPLORATION` | `0.08` | 档位级 ε 探索率（学习必需；`0` 关闭，代价是弱样本档位学不到） |
 | `TIERS` | 自动发现 | 静态档位覆盖：`'{"fast":["m"],"mid":["m"],"strong":["m"]}'` |
 | `PRICES` | 内置通用价 | 元/百万 token：`'{"fast":{"in":1,"out":4}}'` |
 | `TIERS_TTL_MS` | `600000` | 目录探测周期 |

@@ -51,6 +51,7 @@ async function withGateway(mode, fn) {
     port: 0, host: '127.0.0.1', mode,
     newapiBaseUrl: `http://127.0.0.1:${mock.port}`,
     newapiKey: 'sk-gw-key', home,
+    exploration: 0, // 测试关掉 ε 探索保证确定性
     tiers: { fast: ['deepseek-v4-flash'], mid: ['deepseek-v4'], strong: ['deepseek-v4-pro'] },
   })
   // 静态目录已在 config.tiers，手动同步给 router（生产路径由 Catalog.onRefresh 做）

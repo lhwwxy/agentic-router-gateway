@@ -4,6 +4,7 @@
 LiteLLM / 其他网关适配层把"请求进入 / 响应结束 / 失败"翻译成 decide/settle 调用。
 """
 
+import random
 import time
 
 from .classify import classify, features_of, FEATURE_TYPES
@@ -17,6 +18,7 @@ from .store import Store
 LIN_GRADUATION = 50    # LinUCB 毕业样本线
 KNN_GRADUATION = 30    # k-NN 毕业经验线
 DECISION_WINDOW = 200  # 内存中保留的最近决策数（用于 settle 匹配）
+EXPLORATION_EPS = 0.08  # 档位级 ε 探索率（0 关闭）
 
 
 def empty_tiers():
@@ -49,9 +51,10 @@ def rebuild_features(decision):
 
 class Router:
     def __init__(self, store=None, home=None, mode=None, model_tiers=None,
-                 cross_provider=True, prices=None, rng=None):
+                 cross_provider=True, prices=None, rng=None, exploration=None):
         self.store = store or Store(home)
         self.cross_provider = cross_provider
+        self.exploration = EXPLORATION_EPS if exploration is None else exploration
         self.model_tiers = model_tiers or empty_tiers()
         self.prices = prices
         self._rng = rng
@@ -89,6 +92,13 @@ class Router:
         chosen_rec = meta["byName"].get(meta["chosen"]) or recs["rule"]
         # k-NN 冷启动可能给出 None 档位：回退规则表
         tier = chosen_rec["tier"] or recs["rule"]["tier"]
+        explored = False
+        # 档位级 ε 探索（v0.2）：EXP3 按实现奖励评判专家，会惩罚付探索成本的 UCB；
+        # 贪婪专家主导后没人再探索非首选档，正确档位的数据永远采不到。
+        # 以 ε 概率随机路由一个可用档位，保证全臂数据持续流入（reward 记在 used 档）。
+        if self.exploration > 0 and len(tiers) > 1 and random.random() < self.exploration:
+            tier = tiers[random.randrange(len(tiers))]
+            explored = True
         resolved = resolve_tier(tier, provider, self.model_tiers,
                                 {"crossProvider": self.cross_provider})
 
@@ -107,7 +117,7 @@ class Router:
             "used": resolved["used"],
             "provider": resolved["provider"],
             "model": resolved["target"],
-            "note": resolved["note"],
+            "note": resolved["note"] + (" [explore]" if explored else ""),
             "reason": (chosen_rec or {}).get("reason", ""),
             "settled": False,
         }

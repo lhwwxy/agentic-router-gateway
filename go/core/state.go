@@ -35,8 +35,12 @@ type Exp3State struct {
 	Total        int                `json:"total"`
 	LinGraduated bool               `json:"linGraduated"`
 	KnnGraduated bool               `json:"knnGraduated"`
+	Gamma        float64            `json:"gamma,omitempty"` // 0 → 默认 Gamma
 	Weights      map[string]float64 `json:"weights"`
 }
+
+// Gamma 是 EXP3 元选择器的 γ 混合率（每位专家保底 Gamma/K 采样概率）。
+const Gamma = 0.05
 
 type State struct {
 	Mode string     `json:"mode"` // shadow | active

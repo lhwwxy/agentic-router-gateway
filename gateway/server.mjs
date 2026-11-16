@@ -27,6 +27,7 @@ export function configFromEnv(env = process.env) {
     crossProvider: env.CROSS_PROVIDER !== 'false',
     home: env.AGENTIC_ROUTER_HOME,
     ttlMs: Number(env.TIERS_TTL_MS || 600000),
+    exploration: env.EXPLORATION !== undefined ? Number(env.EXPLORATION) : undefined,
   }
 }
 
@@ -115,6 +116,7 @@ export function createGateway(config = {}) {
   const router = new Router({
     home: cfg.home, mode: cfg.mode, crossProvider: cfg.crossProvider,
     modelTiers: emptyTiers(), prices: cfg.prices,
+    exploration: cfg.exploration,
   })
   const catalog = new Catalog({
     baseUrl: cfg.newapiBaseUrl, apiKey: cfg.newapiKey, staticTiers: cfg.tiers,

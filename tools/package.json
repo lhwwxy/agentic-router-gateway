@@ -1,0 +1,12 @@
+{
+  "name": "@agentic-router/tools",
+  "version": "0.1.0",
+  "description": "Simulation & replay tooling: validate the learning flywheel without real traffic",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "sim": "node sim.mjs",
+    "test": "node --test"
+  }
+}

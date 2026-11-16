@@ -235,6 +235,17 @@ export function applyReward(state, rec) {
       Math.exp(0.3 * (rec.reward / rec.pChosen) / rec.pool.length)
   }
   state.exp3.total += 1
+
+  // 权重防爆保险：整体除以最大值（γ 混合已保证采样下限；此处防 float 溢出）。
+  // 关键是"地板"：反复归一化会让小权重下溢到精确 0（0×任何数=0，永久不可恢复）。
+  // 地板把最大权重比钳在 1e6 内——比例过宽（如 1e12）时，被冷落专家靠 γ 地板
+  // 采样翻身需要上千轮，主导权振荡周期过长；1e6 让恢复以百轮计。
+  const ws = state.exp3.weights
+  let max = 0
+  for (const k in ws) if (ws[k] > max) max = ws[k]
+  if (max > 1e50) {
+    for (const k in ws) ws[k] = Math.max(ws[k] / max, 1e-6)
+  }
 }
 
 // 反馈结算修正：把已应用奖励改为 newReward（人类在反馈窗口内点了 👍/👎 之后）

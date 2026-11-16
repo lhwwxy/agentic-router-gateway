@@ -289,6 +289,17 @@ def apply_reward(state, rec):
             0.3 * (rec["reward"] / rec["pChosen"]) / pool_len)
     state["exp3"]["total"] += 1
 
+    # 权重防爆保险：整体除以最大值（γ 混合已保证采样下限；此处防 float 溢出）。
+    # 关键是"地板"：反复归一化会让小权重下溢到精确 0（0×任何数=0，永久不可恢复）。
+    # 地板把最大权重比钳在 1e6 内——比例过宽（如 1e12）时，被冷落专家靠 γ 地板
+    # 采样翻身需要上千轮，主导权振荡周期过长；1e6 让恢复以百轮计。
+    ws = state["exp3"]["weights"]
+    if ws:
+        m = max(ws.values())
+        if m > 1e50:
+            for k in ws:
+                ws[k] = max(ws[k] / m, 1e-6)
+
 
 def correct_reward(state, rec, new_reward):
     """反馈结算修正：把已应用奖励改为 new_reward（👍/👎 之后）。"""

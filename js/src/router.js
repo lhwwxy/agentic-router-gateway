@@ -13,6 +13,7 @@ import { Store } from './store.js'
 
 export const LIN_GRADUATION = 50   // LinUCB 毕业样本线
 export const KNN_GRADUATION = 30   // k-NN 毕业经验线
+export const EXPLORATION_EPS = 0.08 // 档位级 ε 探索率（0 关闭）
 const DECISION_WINDOW = 200        // 内存中保留的最近决策数（用于 settle 匹配）
 
 export function emptyTiers() {
@@ -46,6 +47,7 @@ export class Router {
   constructor(opts = {}) {
     this.store = opts.store || new Store(opts.home)
     this.crossProvider = opts.crossProvider !== false
+    this.exploration = opts.exploration !== undefined ? opts.exploration : EXPLORATION_EPS
     this.modelTiers = opts.modelTiers || emptyTiers()
     this.prices = opts.prices
     this.state = this.store.loadState() || freshState()
@@ -81,7 +83,15 @@ export class Router {
     const meta = metaPick(recs, state.exp3)
     const chosenRec = meta.byName[meta.chosen] || recs.rule
     // k-NN 冷启动可能给出 null 档位：回退规则表
-    const tier = chosenRec.tier || recs.rule.tier
+    let tier = chosenRec.tier || recs.rule.tier
+    let explored = false
+    // 档位级 ε 探索（v0.2）：EXP3 按实现奖励评判专家，会惩罚付探索成本的 UCB；
+    // 贪婪专家主导后没人再探索非首选档，正确档位的数据永远采不到。
+    // 以 ε 概率随机路由一个可用档位，保证全臂数据持续流入（reward 记在 used 档）。
+    if (this.exploration > 0 && tiers.length > 1 && Math.random() < this.exploration) {
+      tier = tiers[Math.floor(Math.random() * tiers.length)]
+      explored = true
+    }
     const resolved = resolveTier(tier, provider, this.modelTiers, { crossProvider: this.crossProvider })
 
     const decision = {
@@ -98,7 +108,7 @@ export class Router {
       used: resolved.used,
       provider: resolved.provider,
       model: resolved.target,
-      note: resolved.note,
+      note: resolved.note + (explored ? ' [explore]' : ''),
       reason: (chosenRec && chosenRec.reason) || '',
       settled: false,
     }

@@ -391,6 +391,30 @@ func ApplyReward(s *State, rec *RewardRec) {
 			math.Exp(0.3*(rec.Reward/rec.PChosen)/poolLen)
 	}
 	s.Exp3.Total++
+
+	// 权重防爆保险：整体除以最大值（γ 混合已保证采样下限；此处防 float 溢出）。
+	// 关键是"地板"：反复归一化会让小权重下溢到精确 0（0×任何数=0，永久不可恢复）。
+	// 地板把最大权重比钳在 1e6 内——比例过宽（如 1e12）时，被冷落专家靠 γ 地板
+	// 采样翻身需要上千轮，主导权振荡周期过长；1e6 让恢复以百轮计。
+	if m := maxWeight(s.Exp3.Weights); m > 1e50 {
+		for k := range s.Exp3.Weights {
+			w := s.Exp3.Weights[k] / m
+			if w < 1e-6 {
+				w = 1e-6
+			}
+			s.Exp3.Weights[k] = w
+		}
+	}
+}
+
+func maxWeight(w map[string]float64) float64 {
+	m := 0.0
+	for _, v := range w {
+		if v > m {
+			m = v
+		}
+	}
+	return m
 }
 
 // CorrectReward 反馈结算修正：把已应用奖励改为 newReward。
@@ -432,6 +456,10 @@ type MetaResult struct {
 
 // MetaPick EXP3 元选择器：把 {UCB, LinUCB, k-NN, rule} 当臂，按权重软最大采样，
 // 被选策略按重要性加权更新（reward / p_chosen）。
+//
+// v0.2：标准 EXP3 的 γ 混合——p_n = (1−γ)·w_n/Σw + γ/K，保证每位专家
+// 至少 γ/K 的采样概率。没有它，早期复合增长的专家权重会指数爆炸
+// （仿真复现过 2e141 量级），其余专家概率永久归零、无法恢复。
 func MetaPick(recs map[string]Recommendation, e *Exp3State, r float64) MetaResult {
 	pool := buildPool(e, recs)
 
@@ -439,9 +467,18 @@ func MetaPick(recs map[string]Recommendation, e *Exp3State, r float64) MetaResul
 	for _, n := range pool {
 		total += e.Weights[n]
 	}
+	k := float64(len(pool))
+	gamma := Gamma
+	if e.Gamma > 0 {
+		gamma = e.Gamma
+	}
 	ps := map[string]float64{}
 	for _, n := range pool {
-		ps[n] = e.Weights[n] / total
+		raw := 1 / k
+		if total > 0 {
+			raw = e.Weights[n] / total
+		}
+		ps[n] = (1-gamma)*raw + gamma/k
 	}
 	chosen := "rule"
 	for _, n := range pool {

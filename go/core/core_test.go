@@ -195,6 +195,7 @@ func TestRouterDecideSettle(t *testing.T) {
 		seq[0] = 0.0
 		return v
 	})
+	r.Exploration = 0 // 测试关掉 ε 探索保证确定性
 	r.SetMode("active")
 
 	d := r.Decide("帮我总结这篇文章的要点", "p1", nil)
