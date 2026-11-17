@@ -25,6 +25,7 @@ Proxy（config.yaml）用法见 python/README.md。
 """
 
 import threading
+import time
 
 from .router import Router
 
@@ -63,6 +64,48 @@ def _last_user_text(messages):
     return ""
 
 
+def _key_allowed_models(user_api_key_dict):
+    """收集 proxy 附在 key 上的模型白名单（key / team / 别名表）。
+
+    空集合 = 不受限（或在 hook 层无从判断）。active 模式的改写必须落在白名单内，
+    否则保留请求原模型——学习型路由不能越权换模型。"""
+    allowed = set()
+    for attr in ("models", "allowed_team_models"):
+        v = getattr(user_api_key_dict, attr, None)
+        if isinstance(v, (list, tuple)):
+            allowed.update(m for m in v if isinstance(m, str) and m)
+    aliases = getattr(user_api_key_dict, "team_model_aliases", None)
+    if isinstance(aliases, dict):
+        allowed.update(m for m in aliases.values() if isinstance(m, str) and m)
+    return allowed
+
+
+_ID_KEYS = ("litellm_call_id", "request_id")
+_NESTED_SOURCES = ("data", "request_data", "request_obj", "original_request",
+                   "kwargs", "body", "litellm_params")
+
+
+def _find_call_id(*sources):
+    """在 hook 的各种参数形态里找 call id：顶层 kwargs，或嵌套一层的
+    data / request_data / request_obj 等 dict 里。找不到返回 None。"""
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for k in _ID_KEYS:
+            if src.get(k):
+                return src[k]
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for k in _NESTED_SOURCES:
+            nested = src.get(k)
+            if isinstance(nested, dict):
+                for kk in _ID_KEYS:
+                    if nested.get(kk):
+                        return nested[kk]
+    return None
+
+
 def _extract_usage_cost(kwargs, response_obj):
     """优先 LiteLLM 的 response_cost（USD 计），否则从 usage 估算。返回 (cost, source)。"""
     cost = kwargs.get("response_cost")
@@ -82,7 +125,14 @@ def _extract_usage_cost(kwargs, response_obj):
 
 
 class AgenticRouterHook(CustomLogger):
-    """学习型路由 hook。所有路由决策与奖励落盘在 AGENTIC_ROUTER_HOME（默认 ~/.agentic-router）。"""
+    """学习型路由 hook。所有路由决策与奖励落盘在 AGENTIC_ROUTER_HOME（默认 ~/.agentic-router）。
+
+    shadow 模式只记录决策与结果观测，不喂奖励飞轮（请求由原模型服务，
+    其结果不能归因于路由档位）；active 模式改写模型时会先校验 key/team
+    的模型白名单，不通过则保留原模型。"""
+
+    MAX_PENDING = 500    # 结算匹配不上的请求也不能无限堆积
+    PENDING_TTL = 900.0  # 秒；插入时顺带淘汰过期条目
 
     def __init__(self, router=None, mode="shadow", tier_models=None,
                  cross_provider=True, home=None, cost_multiplier=1.0,
@@ -95,7 +145,26 @@ class AgenticRouterHook(CustomLogger):
                                  cross_provider=cross_provider, **router_kwargs)
         self.cost_multiplier = cost_multiplier
         self._lock = threading.RLock()
-        self._pending = {}  # litellm_call_id / request_id → decision_id
+        self._pending = {}  # call id → (decision_id, original_model, insert ts)
+
+    def _track(self, request_id, decision_id, original_model):
+        with self._lock:
+            now = time.time()
+            if len(self._pending) > self.MAX_PENDING // 2:
+                for k in [k for k, v in self._pending.items()
+                          if now - v[2] > self.PENDING_TTL]:
+                    del self._pending[k]
+            self._pending[request_id] = (decision_id, original_model, now)
+            while len(self._pending) > self.MAX_PENDING:
+                self._pending.pop(next(iter(self._pending)))  # 丢最旧
+
+    def _take(self, *sources):
+        request_id = _find_call_id(*sources)
+        if not request_id:
+            return None
+        with self._lock:
+            pending = self._pending.pop(request_id, None)
+        return pending
 
     # ---- 请求前：分类 + 决策（+ active 模式改写模型）----
     async def async_pre_call_hook(self, user_api_key_dict=None, cache=None,
@@ -106,32 +175,42 @@ class AgenticRouterHook(CustomLogger):
         text = _last_user_text(messages)
         if not text:
             return data
-        request_id = data.get("litellm_call_id") or data.get("request_id") or id(data)
+        request_id = _find_call_id(data, kwargs) or id(data)
         original_model = data.get("model")
         with self._lock:
             decision = self.router.decide(text, provider="default")
-            self._pending[request_id] = (decision["id"], original_model)
+        self._track(request_id, decision["id"], original_model)
         if self.router.mode == "active" and decision.get("model"):
-            data["model"] = decision["model"]
-            data.setdefault("metadata", {})["agentic_router"] = {
-                "decision_id": decision["id"],
-                "tier": decision["tier"],
-                "expert": decision["chosen"],
-                "reason": decision["reason"],
-            }
+            allowed = _key_allowed_models(user_api_key_dict)
+            if not allowed or decision["model"] in allowed:
+                data["model"] = decision["model"]
+                data.setdefault("metadata", {})["agentic_router"] = {
+                    "decision_id": decision["id"],
+                    "tier": decision["tier"],
+                    "expert": decision["chosen"],
+                    "reason": decision["reason"],
+                }
+            else:
+                # key/team 的模型白名单不含目标模型：保留原模型并记录。
+                data.setdefault("metadata", {})["agentic_router"] = {
+                    "decision_id": decision["id"],
+                    "tier": decision["tier"],
+                    "model": decision["model"],
+                    "blocked": "key-model-restriction",
+                    "reason": decision["reason"],
+                }
         return data
 
-    # ---- 成功：延迟/成本 → 奖励 ----
+    # ---- 成功：延迟/成本 → 奖励（active）----
     async def async_post_call_success_hook(self, user_api_key_dict=None, kwargs=None,
                                            response_obj=None, start_time=None,
                                            end_time=None, **kw):
-        kwargs = kwargs or {}
-        request_id = kwargs.get("litellm_call_id") or kwargs.get("request_id")
-        with self._lock:
-            pending = self._pending.pop(request_id, None)
+        pending = self._take(kwargs, kw)
         if pending is None:
             return
-        decision_id, _original = pending
+        decision_id, _original, _ts = pending
+        if self.router.mode != "active":
+            return  # shadow：只观察（决策已落盘），不用原模型的结果训练飞轮
         dt_ms = None
         if start_time is not None and end_time is not None:
             dt_ms = (end_time - start_time).total_seconds() * 1000
@@ -142,18 +221,17 @@ class AgenticRouterHook(CustomLogger):
                 cost_yuan=(cost or 0.0) * self.cost_multiplier,
             )
 
-    # ---- 失败：reward=0 ----
+    # ---- 失败：reward=0（active）----
     async def async_post_call_failure_hook(self, user_api_key_dict=None,
                                            request_obj=None, original_exception=None,
                                            user_model=None, start_time=None,
                                            end_time=None, **kwargs):
-        kwargs = kwargs or {}
-        request_id = kwargs.get("litellm_call_id") or kwargs.get("request_id")
-        with self._lock:
-            pending = self._pending.pop(request_id, None)
+        pending = self._take(request_obj, kwargs)
         if pending is None:
             return
-        decision_id, _original = pending
+        decision_id, _original, _ts = pending
+        if self.router.mode != "active":
+            return
         with self._lock:
             self.router.settle(decision_id, success=False)
 

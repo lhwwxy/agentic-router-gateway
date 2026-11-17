@@ -146,4 +146,15 @@ clamp 0..1，两位小数
 | 响应失败 / 重试 | `settle(id, {success: false})` |
 | 人类反馈（若有通道） | `correct(id, newReward)` |
 
+宿主必须遵守的两条安全/正确性规则（来自上游 review，已在三个集成中落地）：
+
+1. **shadow 不训练**：shadow 模式下请求由原模型服务，其结果不能归因于路由
+   档位——`settle` 只记录观测（决策本身照常落盘），不得喂奖励飞轮。
+   飞轮只在 active 模式（改写真实发生）时进食。
+2. **active 改写前重检权限**：改写模型发生在宿主的鉴权（key/team 模型白名单）
+   之后时，必须对目标模型重做校验（如 LiteLLM 的
+   `user_api_key_dict.models/allowed_team_models`、new-api 的
+   `TokenModelLimitAllows`）；不通过则保留请求原模型并记录 `blocked` 原因。
+   学习型路由不得越权换模型。
+
 网关盲区（宿主内版本有、网关版没有的信号）：工具调用失败次数、模型重试次数、用户 👍/👎。网关侧以延迟/状态/成本近似。

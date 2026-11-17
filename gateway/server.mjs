@@ -194,7 +194,8 @@ export function createGateway(config = {}) {
     }).catch((e) => e)
 
     if (up instanceof Error) {
-      if (decision) router.settle(decision.id, { success: false, dtMs: Date.now() - startMs })
+      // shadow 下请求由原模型服务，结果不能归因于路由档位，只记录不训练
+      if (decision && router.mode === 'active') router.settle(decision.id, { success: false, dtMs: Date.now() - startMs })
       res.writeHead(502, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { message: 'upstream unreachable: ' + up.message } }))
       return
@@ -203,7 +204,7 @@ export function createGateway(config = {}) {
     const tier = decision ? decision.used : null
     // usage 统一按 OpenAI 格式（prompt_tokens/completion_tokens）传入，这里转换
     const settle = (rawUsage) => {
-      if (!decision) return
+      if (!decision || router.mode !== 'active') return // shadow 只观察不训练
       const usage = toUsage(rawUsage)
       const costYuan = usage && actualModel
         ? turnCostYuan(usage, PROVIDER, actualModel, tier, router.prices)
