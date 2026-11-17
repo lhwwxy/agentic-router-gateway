@@ -24,6 +24,7 @@ SDK 用法::
 Proxy（config.yaml）用法见 python/README.md。
 """
 
+import os
 import threading
 import time
 
@@ -136,7 +137,7 @@ class AgenticRouterHook(CustomLogger):
 
     def __init__(self, router=None, mode="shadow", tier_models=None,
                  cross_provider=True, home=None, cost_multiplier=1.0,
-                 dt_penalty=True, **router_kwargs):
+                 dt_penalty=True, guarded_models=None, **router_kwargs):
         if router is not None:
             self.router = router
         else:
@@ -144,17 +145,26 @@ class AgenticRouterHook(CustomLogger):
             self.router = Router(home=home, mode=mode, model_tiers=model_tiers,
                                  cross_provider=cross_provider, **router_kwargs)
         self.cost_multiplier = cost_multiplier
+        # 模型级 guardrail（PII/拦截）在 proxy 选定模型后才挂接：把请求改写到
+        # 受保护模型会跳过它的输入检查。把这些模型列出来（构造参数或
+        # AGENTIC_ROUTER_GUARDED_MODELS 环境变量，逗号分隔），active 模式拒绝
+        # 路由进入它们——即使 key 的白名单允许。
+        self.guarded_models = {m for m in (guarded_models or []) if isinstance(m, str) and m}
+        self.guarded_models.update(
+            m.strip() for m in os.environ.get("AGENTIC_ROUTER_GUARDED_MODELS", "").split(",")
+            if m.strip())
         self._lock = threading.RLock()
-        self._pending = {}  # call id → (decision_id, original_model, insert ts)
+        self._pending = {}  # call id → {id, ts, mode, train}
 
-    def _track(self, request_id, decision_id, original_model):
+    def _track(self, request_id, decision_id, mode, train):
         with self._lock:
             now = time.time()
             if len(self._pending) > self.MAX_PENDING // 2:
                 for k in [k for k, v in self._pending.items()
-                          if now - v[2] > self.PENDING_TTL]:
+                          if now - v["ts"] > self.PENDING_TTL]:
                     del self._pending[k]
-            self._pending[request_id] = (decision_id, original_model, now)
+            self._pending[request_id] = {"id": decision_id, "ts": now,
+                                         "mode": mode, "train": train}
             while len(self._pending) > self.MAX_PENDING:
                 self._pending.pop(next(iter(self._pending)))  # 丢最旧
 
@@ -176,13 +186,17 @@ class AgenticRouterHook(CustomLogger):
         if not text:
             return data
         request_id = _find_call_id(data, kwargs) or id(data)
-        original_model = data.get("model")
         with self._lock:
             decision = self.router.decide(text, provider="default")
-        self._track(request_id, decision["id"], original_model)
+        train = self.router.mode == "active"
         if self.router.mode == "active" and decision.get("model"):
             allowed = _key_allowed_models(user_api_key_dict)
-            if not allowed or decision["model"] in allowed:
+            blocked = None
+            if allowed and decision["model"] not in allowed:
+                blocked = "key-model-restriction"
+            elif decision["model"] in self.guarded_models:
+                blocked = "guardrail-model-restriction"
+            if blocked is None:
                 data["model"] = decision["model"]
                 data.setdefault("metadata", {})["agentic_router"] = {
                     "decision_id": decision["id"],
@@ -191,14 +205,17 @@ class AgenticRouterHook(CustomLogger):
                     "reason": decision["reason"],
                 }
             else:
-                # key/team 的模型白名单不含目标模型：保留原模型并记录。
+                # key/team 受限，或目标模型受 guardrail 保护：保留原模型并记录。
+                # 请求由原模型服务，其结果不能归因被拒档位——标记不训练。
+                train = False
                 data.setdefault("metadata", {})["agentic_router"] = {
                     "decision_id": decision["id"],
                     "tier": decision["tier"],
                     "model": decision["model"],
-                    "blocked": "key-model-restriction",
+                    "blocked": blocked,
                     "reason": decision["reason"],
                 }
+        self._track(request_id, decision["id"], self.router.mode, train)
         return data
 
     # ---- 成功：延迟/成本 → 奖励（active）----
@@ -208,9 +225,11 @@ class AgenticRouterHook(CustomLogger):
         pending = self._take(kwargs, kw)
         if pending is None:
             return
-        decision_id, _original, _ts = pending
-        if self.router.mode != "active":
-            return  # shadow：只观察（决策已落盘），不用原模型的结果训练飞轮
+        # train（含决策时模式快照）为假：shadow 或被拒改写——
+        # 结果属于原模型，不训练飞轮
+        if not pending["train"]:
+            return
+        decision_id = pending["id"]
         dt_ms = None
         if start_time is not None and end_time is not None:
             dt_ms = (end_time - start_time).total_seconds() * 1000
@@ -229,9 +248,9 @@ class AgenticRouterHook(CustomLogger):
         pending = self._take(request_obj, kwargs)
         if pending is None:
             return
-        decision_id, _original, _ts = pending
-        if self.router.mode != "active":
-            return
+        if not pending["train"]:
+            return  # shadow 或被拒改写：结果属于原模型，不训练
+        decision_id = pending["id"]
         with self._lock:
             self.router.settle(decision_id, success=False)
 
