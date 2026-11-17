@@ -65,6 +65,21 @@ def _last_user_text(messages):
     return ""
 
 
+def _destination_budget_exhausted(user_api_key_dict, model):
+    """键级按模型预算（model_max_budget / model_spend）由 proxy 对**请求模型**
+    在本 hook 之前执行。改写不能落在预算已耗尽的目标模型上——
+    直接请求它会被 proxy 拒绝。缺失/非数值的花费数据不阻塞（只阻塞已知超支的分桶）。"""
+    if not user_api_key_dict or not model:
+        return False
+    max_budget = getattr(user_api_key_dict, "model_max_budget", None)
+    if not isinstance(max_budget, (int, float)) or max_budget <= 0:
+        return False  # 该 key 没配按模型预算
+    spend = getattr(user_api_key_dict, "model_spend", None)
+    if isinstance(spend, dict) and isinstance(spend.get(model), (int, float)):
+        return spend[model] >= max_budget
+    return False
+
+
 def _key_allowed_models(user_api_key_dict):
     """收集 proxy 附在 key 上的模型白名单（key / team / 别名表）。
 
@@ -196,6 +211,8 @@ class AgenticRouterHook(CustomLogger):
                 blocked = "key-model-restriction"
             elif decision["model"] in self.guarded_models:
                 blocked = "guardrail-model-restriction"
+            elif _destination_budget_exhausted(user_api_key_dict, decision["model"]):
+                blocked = "budget-model-restriction"
             if blocked is None:
                 data["model"] = decision["model"]
                 data.setdefault("metadata", {})["agentic_router"] = {
