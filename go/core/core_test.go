@@ -219,3 +219,67 @@ func TestRouterDecideSettle(t *testing.T) {
 		t.Errorf("double settle should be nil, got %+v", again)
 	}
 }
+
+func newTestRouter(mode string) *Router {
+	mt := ModelTiers{
+		Providers: []ProviderEntry{{Provider: "p1"}},
+		Tiers: map[string][]string{
+			"fast": {"p1/lite"}, "mid": {"p1/base"}, "strong": {"p1/pro"},
+		},
+	}
+	r := NewRouter(nil, mt, true, func() float64 { return 0.99 })
+	r.Exploration = 0
+	r.SetMode(mode)
+	return r
+}
+
+// shadow 决策的结算只清 pending 记录观测，不喂飞轮
+func TestShadowSettleDoesNotTrain(t *testing.T) {
+	r := newTestRouter("shadow")
+	d := r.Decide("帮我总结这篇文章的要点", "p1", nil)
+	if d.Train {
+		t.Errorf("shadow decision must not train")
+	}
+	res := r.Settle(d.ID, Outcome{Success: true, DtMs: 5000})
+	if res == nil || res.Trained {
+		t.Errorf("res = %+v", res)
+	}
+	if r.State.UCB.Total != 0 || r.State.Lin.Total != 0 {
+		t.Errorf("shadow settle must not train: ucb=%d lin=%d", r.State.UCB.Total, r.State.Lin.Total)
+	}
+	// 决策已 drain：不可重复结算
+	if again := r.Settle(d.ID, Outcome{Success: true}); again != nil {
+		t.Errorf("double settle should be nil, got %+v", again)
+	}
+}
+
+// active 决策但改写未生效（MarkNoTrain）：结算不训练
+func TestMarkNoTrainDoesNotTrain(t *testing.T) {
+	r := newTestRouter("active")
+	d := r.Decide("帮我总结这篇文章的要点", "p1", nil)
+	if !d.Train {
+		t.Fatalf("active decision with model should train")
+	}
+	r.MarkNoTrain(d.ID)
+	res := r.Settle(d.ID, Outcome{Success: true, DtMs: 5000})
+	if res == nil || res.Trained {
+		t.Errorf("res = %+v", res)
+	}
+	if r.State.UCB.Total != 0 || r.State.Lin.Total != 0 {
+		t.Errorf("no-train settle must not train: ucb=%d lin=%d", r.State.UCB.Total, r.State.Lin.Total)
+	}
+}
+
+// 决策时模式快照：决策后切 active 不把 shadow 决策喂给飞轮
+func TestModeSnapshotSwitchingMidFlight(t *testing.T) {
+	r := newTestRouter("shadow")
+	d := r.Decide("帮我总结这篇文章的要点", "p1", nil)
+	r.SetMode("active") // 中途切换
+	if d.Train {
+		t.Errorf("decision train flag must snapshot mode at decide time")
+	}
+	r.Settle(d.ID, Outcome{Success: true, DtMs: 5000})
+	if r.State.UCB.Total != 0 {
+		t.Errorf("shadow-decided turn must not train after mode switch: ucb=%d", r.State.UCB.Total)
+	}
+}

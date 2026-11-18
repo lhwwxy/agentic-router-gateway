@@ -129,7 +129,7 @@ test('e2e: active 模式改写模型 + 非流式结算（成本入奖励）', as
   })
 })
 
-test('e2e: shadow 模式不改写模型但仍结算', async () => {
+test('e2e: shadow 模式不改写模型，结算只记观测不训练', async () => {
   await withGateway('shadow', async (mock, g) => {
     const port = g.server.address().port
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
@@ -143,7 +143,10 @@ test('e2e: shadow 模式不改写模型但仍结算', async () => {
     assert.equal(res.status, 200)
     assert.equal(mock.seen[0].model, 'deepseek-v4') // 未改写
     assert.equal(res.headers.get('x-agentic-router-tier'), null) // shadow 无头
-    assert.equal(g.router.state.ucb.total, 1)
+    // shadow 的结果由原模型服务，不能归因于路由档位：结算 drain 但不喂飞轮
+    assert.equal(g.router.state.ucb.total, 0)
+    const d = g.router.state.decisions.find((x) => !x.train && x.settled)
+    assert.ok(d, 'shadow decision should settle (drain) without training')
   })
 })
 

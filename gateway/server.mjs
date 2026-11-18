@@ -177,14 +177,15 @@ export function createGateway(config = {}) {
       const text = lastUserText(j.messages)
       if (text) {
         decision = router.decide(text, PROVIDER, availableTiers(catalog.modelTiers))
-        if (router.mode === 'active' && decision.model) {
+        // decision.mode 是决策时快照：中途切 shadow/active 不影响本请求的改写与结算归属
+        if (decision.mode === 'active' && decision.model) {
           j.model = decision.model
           actualModel = decision.model
           bodyText = JSON.stringify(j)
         }
       }
     }
-    const routedHeaders = decision && router.mode === 'active' && decision.model
+    const routedHeaders = decision && decision.mode === 'active' && decision.model
       ? { 'x-agentic-router-tier': String(decision.used), 'x-agentic-router-expert': String(decision.chosen) }
       : {}
 
@@ -194,8 +195,8 @@ export function createGateway(config = {}) {
     }).catch((e) => e)
 
     if (up instanceof Error) {
-      // shadow 下请求由原模型服务，结果不能归因于路由档位，只记录不训练
-      if (decision && router.mode === 'active') router.settle(decision.id, { success: false, dtMs: Date.now() - startMs })
+      // shadow 决策只清 pending 记观测（settle 内部按 train 快照决定是否喂飞轮）
+      if (decision) router.settle(decision.id, { success: false, dtMs: Date.now() - startMs })
       res.writeHead(502, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { message: 'upstream unreachable: ' + up.message } }))
       return
@@ -204,7 +205,8 @@ export function createGateway(config = {}) {
     const tier = decision ? decision.used : null
     // usage 统一按 OpenAI 格式（prompt_tokens/completion_tokens）传入，这里转换
     const settle = (rawUsage) => {
-      if (!decision || router.mode !== 'active') return // shadow 只观察不训练
+      // train 快照在 router.settle 内部判断：shadow 只观察不训练
+      if (!decision) return
       const usage = toUsage(rawUsage)
       const costYuan = usage && actualModel
         ? turnCostYuan(usage, PROVIDER, actualModel, tier, router.prices)

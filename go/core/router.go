@@ -42,13 +42,18 @@ type Decision struct {
 	Settled    bool           `json:"settled"`
 	Reward     float64        `json:"reward,omitempty"`
 	LinLr      float64        `json:"linLr,omitempty"`
+	// Train 决策时快照：mode=active 且有改写意图才可能训练飞轮。
+	// shadow 决策或改写被拒（MarkNoTrain）时为假——请求由原模型服务，
+	// 其结果不能归因于路由档位。
+	Train      bool           `json:"train,omitempty"`
 }
 
-// SettleResult 结算结果。
+// SettleResult 结算结果。Trained=false 表示仅结算观测（shadow/被拒改写）。
 type SettleResult struct {
 	Reward    float64
 	Breakdown Breakdown
 	Tier      string
+	Trained   bool
 }
 
 type decisionRing struct {
@@ -143,12 +148,25 @@ func (r *Router) Decide(text, provider string, availableTiers []string) *Decisio
 		Tier: tier, Used: resolved.Used,
 		Provider: resolved.Provider, Model: resolved.Target,
 		Note: resolved.Note, Reason: chosenRec.Reason,
+		// 决策时模式快照 + 改写意图：shadow 决策永不训练
+		Train: r.State.Mode == "active" && resolved.Target != "",
 	}
 	r.decisions.push(d)
 	return d
 }
 
-// Settle 结果回传：计算奖励并喂飞轮。
+// MarkNoTrain 撤销改写（宿主侧替换 body 失败等）：该决策的结果
+// 由原模型服务，结算时只记观测不喂飞轮。
+func (r *Router) MarkNoTrain(decisionID int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if d := r.decisions.find(decisionID, false); d != nil {
+		d.Train = false
+	}
+}
+
+// Settle 结果回传：计算奖励并喂飞轮。train=false（shadow 决策或改写被拒）时
+// 只清 pending 记录观测，不喂飞轮——请求由原模型服务，结果不能归因路由档位。
 func (r *Router) Settle(decisionID int, o Outcome) *SettleResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -158,15 +176,18 @@ func (r *Router) Settle(decisionID int, o Outcome) *SettleResult {
 	}
 	d.Settled = true
 	reward, bd := RewardOf(o, o.Success)
+	d.Reward = reward
+	if !d.Train {
+		return &SettleResult{Reward: reward, Breakdown: bd, Tier: d.Used, Trained: false}
+	}
 	rec := &RewardRec{
 		ClsType: d.Type, UcbTier: d.Used, LinTier: d.Used,
 		F: rebuildFeatures(d), Reward: reward,
 		Chosen: d.Chosen, PChosen: d.PChosen, Pool: d.Pool,
 	}
 	ApplyReward(r.State, rec)
-	d.Reward = reward
 	d.LinLr = rec.LinLr
-	return &SettleResult{Reward: reward, Breakdown: bd, Tier: d.Used}
+	return &SettleResult{Reward: reward, Breakdown: bd, Tier: d.Used, Trained: true}
 }
 
 // Correct 人类反馈修正（👍/👎）。

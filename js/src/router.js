@@ -111,6 +111,9 @@ export class Router {
       note: resolved.note + (explored ? ' [explore]' : ''),
       reason: (chosenRec && chosenRec.reason) || '',
       settled: false,
+      // 决策时模式快照 + 改写意图：shadow 决策永不训练
+      // （请求由原模型服务，结果不能归因于路由档位）
+      train: state.mode === 'active' && resolved.target !== '',
     }
     state.decisions.push(decision)
     if (state.decisions.length > DECISION_WINDOW) state.decisions.shift()
@@ -119,7 +122,8 @@ export class Router {
     return decision
   }
 
-  // 结果回传：{ success, dtMs, costYuan, toolErrors, retries } → 计算奖励并喂飞轮
+  // 结果回传：{ success, dtMs, costYuan, toolErrors, retries } → 计算奖励并喂飞轮。
+  // train=false（shadow 决策或 markNoTrain 后）时只清 pending 记录观测不喂飞轮。
   settle(decisionId, outcome = {}) {
     const state = this.state
     const d = state.decisions.find((x) => x.id === decisionId && !x.settled)
@@ -132,6 +136,14 @@ export class Router {
       retries: outcome.retries || 0,
       costYuan: outcome.costYuan || 0,
     }, tag, outcome.dtMs)
+
+    if (!d.train) {
+      // shadow / 被拒改写：只记观测（rewards 行带决策时 mode，重放时跳过不训练）
+      d.reward = reward
+      this.#persist()
+      this.store.appendJsonl('rewards.jsonl', { decisionId: d.id, ts: Date.now(), reward, breakdown, mode: d.mode })
+      return { reward, breakdown, tier: d.used, trained: false }
+    }
 
     const rec = {
       clsType: d.type,
@@ -147,8 +159,15 @@ export class Router {
     d.reward = reward
     d.linLr = rec.linLr
     this.#persist()
-    this.store.appendJsonl('rewards.jsonl', { decisionId: d.id, ts: Date.now(), reward, breakdown })
-    return { reward, breakdown, tier: d.used }
+    this.store.appendJsonl('rewards.jsonl', { decisionId: d.id, ts: Date.now(), reward, breakdown, mode: d.mode })
+    return { reward, breakdown, tier: d.used, trained: true }
+  }
+
+  // 撤销改写（宿主侧替换 body 失败等）：该决策的结果由原模型服务，
+  // 结算时只记观测不喂飞轮。
+  markNoTrain(decisionId) {
+    const d = this.state.decisions.find((x) => x.id === decisionId && !x.settled)
+    if (d) d.train = false
   }
 
   // 人类反馈修正（👍/👎）：把某条已结算决策的奖励改写并修正各专家

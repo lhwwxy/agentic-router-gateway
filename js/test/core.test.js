@@ -112,6 +112,73 @@ test('correctReward: 反馈修正（golden）', () => {
   assert.equal(state.knn.pool[1].r, 0)
 })
 
+test('Router: shadow 决策 settle 只记观测不训练', () => {
+  const home = mkdtempSync(join(tmpdir(), 'agentic-router-shadow-'))
+  try {
+    const router = new Router({
+      home,
+      mode: 'shadow',
+      modelTiers: {
+        providers: [{ provider: 'p1' }],
+        tiers: { fast: ['p1/lite'], mid: ['p1/base'], strong: ['p1/pro'] },
+      },
+    })
+    const d = router.decide('帮我总结这篇文章的要点', 'p1')
+    assert.equal(d.train, false) // 决策时快照：shadow 永不训练
+    const r = router.settle(d.id, { success: true, dtMs: 5000 })
+    assert.equal(r.trained, false)
+    assert.equal(router.state.ucb.total, 0)
+    assert.equal(router.state.lin.total, 0)
+    assert.equal(d.settled, true) // pending 已 drain
+    assert.equal(router.settle(d.id, { success: true }), null) // 不可重复结算
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Router: markNoTrain 后 settle 不训练（改写未生效）', () => {
+  const home = mkdtempSync(join(tmpdir(), 'agentic-router-notrain-'))
+  try {
+    const router = new Router({
+      home,
+      mode: 'active',
+      modelTiers: {
+        providers: [{ provider: 'p1' }],
+        tiers: { fast: ['p1/lite'], mid: ['p1/base'], strong: ['p1/pro'] },
+      },
+    })
+    const d = router.decide('帮我总结这篇文章的要点', 'p1')
+    assert.equal(d.train, true)
+    router.markNoTrain(d.id)
+    const r = router.settle(d.id, { success: true, dtMs: 5000 })
+    assert.equal(r.trained, false)
+    assert.equal(router.state.ucb.total, 0)
+    assert.equal(router.state.lin.total, 0)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Router: 决策时模式快照，中途切 active 不把 shadow 决策喂飞轮', () => {
+  const home = mkdtempSync(join(tmpdir(), 'agentic-router-mmode-'))
+  try {
+    const router = new Router({
+      home,
+      mode: 'shadow',
+      modelTiers: {
+        providers: [{ provider: 'p1' }],
+        tiers: { fast: ['p1/lite'], mid: ['p1/base'], strong: ['p1/pro'] },
+      },
+    })
+    const d = router.decide('帮我总结这篇文章的要点', 'p1')
+    router.setMode('active') // 中途切换
+    router.settle(d.id, { success: true, dtMs: 5000 })
+    assert.equal(router.state.ucb.total, 0) // shadow 决策的回合不训练
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('Router: decide → settle 全链路', () => {
   const home = mkdtempSync(join(tmpdir(), 'agentic-router-'))
   try {

@@ -176,14 +176,18 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config Config, body []byte, log 
 	ctx.SetContext(ctxDecisionID, d.ID)
 	ctx.SetContext(ctxStartMs, time.Now().UnixMilli())
 
-	if routerInstance.State.Mode == "active" && d.Model != "" {
+	// d.Train 是决策时快照（active 且有改写意图）；中途切 shadow/active 不影响本请求
+	if d.Train {
 		if newBody, err := sjson.SetBytes(body, "model", d.Model); err == nil {
 			if err := proxywasm.ReplaceHttpRequestBody(newBody); err != nil {
 				log.Errorf("agentic-router: replace body failed: %v", err)
+				routerInstance.MarkNoTrain(d.ID) // 改写未生效：结果归原模型，不训练
 			} else {
 				_ = proxywasm.AddHttpRequestHeader("x-agentic-router-tier", d.Used)
 				_ = proxywasm.AddHttpRequestHeader("x-agentic-router-expert", d.Chosen)
 			}
+		} else {
+			routerInstance.MarkNoTrain(d.ID)
 		}
 	}
 	log.Debugf("agentic-router: decide id=%d type=%s complexity=%v tier=%s model=%s expert=%s reason=%s",
@@ -244,8 +248,14 @@ func onHttpStreamDone(ctx wrapper.HttpContext, config Config, log wrapper.Log) {
 	})
 	if res != nil {
 		ctx.SetContext(ctxSettled, true)
-		log.Debugf("agentic-router: settle id=%d reward=%v tier=%s dt=%dms cost=%v",
-			id, res.Reward, res.Tier, time.Now().UnixMilli()-startMs, cost)
+		if res.Trained {
+			log.Debugf("agentic-router: settle id=%d reward=%v tier=%s dt=%dms cost=%v",
+				id, res.Reward, res.Tier, time.Now().UnixMilli()-startMs, cost)
+		} else {
+			// shadow / 被拒改写：只记观测不喂飞轮
+			log.Debugf("agentic-router: observe id=%d reward=%v tier=%s dt=%dms (no training)",
+				id, res.Reward, res.Tier, time.Now().UnixMilli()-startMs)
+		}
 		saveSharedState(log)
 	}
 }
