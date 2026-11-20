@@ -196,6 +196,12 @@ class AgenticRouterHook(CustomLogger):
                                   data=None, call_type=None, **kwargs):
         if not isinstance(data, dict):
             return data
+        # 敏感数据路由（PROXY_SensitiveDataRoutingHandler）可能已把会话钉到
+        # 私有模型。该钉住是合规边界，必须保持权威：完全跳过 agentic 路由
+        # （不决策、不训练），否则本 hook 的档位改写会把携带敏感历史的
+        # 后续消息送到公网档位模型。
+        if (data.get("metadata") or {}).get("sensitive_data_routing_applied"):
+            return data
         messages = data.get("messages") or []
         text = _last_user_text(messages)
         if not text:
